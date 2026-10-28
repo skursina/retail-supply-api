@@ -1,0 +1,16 @@
+.venv/
+
+__pycache__/
+*.py[cod]
+*.pyc
+*$py.class
+
+staticfiles/
+
+.env
+!.env.example
+
+.pytest_cache/
+
+
+.vscode/
