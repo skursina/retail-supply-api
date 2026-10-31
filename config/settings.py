@@ -40,7 +40,9 @@ INSTALLED_APPS = [
 
     'rest_framework',
     'rest_framework.authtoken',
+
     'users',
+    'products',
 ]
 
 MIDDLEWARE = [
@@ -76,14 +78,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv(BASE_DIR / ".env")
+
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'retail_supply_db',
-        'USER': 'retail_user',
-        'PASSWORD': 'sK16785444#',
-        'HOST': 'localhost',
-        'PORT': '5432',
+        'NAME': os.getenv("DB_NAME"),
+        'USER': os.getenv("DB_USER"),
+        'PASSWORD': os.getenv("DB_PASSWORD"),
+        'HOST': os.getenv("DB_HOST", "localhost"),
+        'PORT': os.getenv("DB_PORT", "5432"),
     }
 }
 
