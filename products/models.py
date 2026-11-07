@@ -45,6 +45,10 @@ class Product(models.Model):
         blank=True,
         verbose_name="Описание",
     )
+    image = models.URLField(
+        blank=True,
+        verbose_name="Ссылка на изображение",
+    )
     unit = models.CharField(
         max_length=50,
         default="шт.",
