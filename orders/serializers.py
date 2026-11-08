@@ -127,3 +127,14 @@ class OrderSerializer(serializers.ModelSerializer):
             "total_amount", "delivery_address", "created_at", "items",
         ]
         read_only_fields = fields
+
+
+class OrderStatusSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Order
+        fields = ["status"]
+
+    def validate_status(self, value):
+        if value not in Order.Status.values:
+            raise serializers.ValidationError("Неизвестный статус")
+        return value

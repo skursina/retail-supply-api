@@ -2,7 +2,7 @@ from django.db import transaction
 
 from rest_framework import generics, status
 from rest_framework.views import APIView, Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.exceptions import ValidationError
 
 from .models import (
@@ -13,7 +13,7 @@ from .models import (
 from .serializers import (
     AddressSerializer, 
     CartSerializer, CartItemSerializer,
-    OrderSerializer, OrderConfirmSerializer
+    OrderSerializer, OrderConfirmSerializer, OrderStatusSerializer
     )
 from .emails import (
     send_order_confirmation_to_buyer,
@@ -193,3 +193,67 @@ class OrderConfirmView(APIView):
             OrderSerializer(created_orders, many=True).data,
             status=status.HTTP_201_CREATED,
         )    
+
+
+class IsSupplierOfOrderOrAdmin(BasePermission):
+    """Статус может менять поставщик заказа или админ."""
+
+    def has_object_permission(self, request, view, obj):
+        if request.user.is_staff:
+            return True
+        return obj.supplier.user_id == request.user.id
+
+
+class OrderListView(generics.ListAPIView):
+    """Заказы пользователя: покупатель — свои, поставщик — адресованные ему."""
+    serializer_class = OrderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = (
+            Order.objects
+            .select_related("supplier", "delivery_address", "buyer")
+            .prefetch_related("items")
+        )
+        if user.is_staff:
+            return qs
+        if user.role == user.Role.SUPPLIER:
+            return qs.filter(supplier__user=user)
+        return qs.filter(buyer=user)
+
+
+class OrderDetailView(generics.RetrieveAPIView):
+    serializer_class = OrderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = (
+            Order.objects
+            .select_related("supplier", "delivery_address", "buyer")
+            .prefetch_related("items")
+        )
+        if user.is_staff:
+            return qs
+        if user.role == user.Role.SUPPLIER:
+            return qs.filter(supplier__user=user)
+        return qs.filter(buyer=user)
+
+
+class OrderStatusUpdateView(generics.UpdateAPIView):
+    """PATCH /api/orders/<id>/status/ — меняет статус."""
+    serializer_class = OrderStatusSerializer
+    permission_classes = [IsAuthenticated, IsSupplierOfOrderOrAdmin]
+    http_method_names = ["patch", "put"]
+
+    def get_queryset(self):
+        return Order.objects.select_related("supplier")
+
+    def perform_update(self, serializer):
+        old_status = serializer.instance.status
+        order = serializer.save()
+        if order.status != old_status:
+            # Уведомим покупателя о смене статуса
+            from .emails import send_order_status_email
+            send_order_status_email(order)

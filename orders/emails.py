@@ -53,3 +53,21 @@ def send_order_invoice_to_supplier(order: Order) -> None:
         recipient_list=[recipient],
         fail_silently=False,
     )
+
+
+def send_order_status_email(order: Order) -> None:
+    """Уведомление покупателю о смене статуса заказа."""
+    status_label = order.get_status_display()
+    body = (
+        f"Здравствуйте!\n\n"
+        f"Статус вашего заказа {order.number} изменился: {status_label}.\n"
+        f"Поставщик: {order.supplier.company_name}\n"
+        f"Сумма: {order.total_amount} ₽\n"
+    )
+    send_mail(
+        subject=f"Заказ {order.number}: {status_label}",
+        message=body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[order.buyer.email],
+        fail_silently=True,  # статус важнее письма
+    )
