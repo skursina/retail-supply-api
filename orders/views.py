@@ -1,7 +1,7 @@
 from django.db import transaction
 
 from rest_framework import generics, status
-from rest_framework.views import APIView
+from rest_framework.views import APIView, Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 
@@ -15,6 +15,10 @@ from .serializers import (
     CartSerializer, CartItemSerializer,
     OrderSerializer, OrderConfirmSerializer
     )
+from .emails import (
+    send_order_confirmation_to_buyer,
+    send_order_invoice_to_supplier,
+)
 
 
 class AddressListCreateView(generics.ListCreateAPIView):
@@ -103,6 +107,12 @@ class OrderConfirmView(APIView):
         serializer.is_valid(raise_exception=True)
         address = Address.objects.get(pk=serializer.validated_data["address_id"])
 
+        if not request.user.email:
+            return Response(
+                {"error": "Укажите email в профиле, чтобы получить подтверждение"},
+                status=400,
+            )
+
         cart = (
             Cart.objects
             .filter(buyer=request.user, is_active=True)
@@ -117,7 +127,7 @@ class OrderConfirmView(APIView):
                 {"error": "Корзина пуста"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
+                
         # Валидация и группировка по поставщикам
         grouped: dict = {}
         for item in cart.items.select_related(
@@ -168,6 +178,10 @@ class OrderConfirmView(APIView):
 
             order.total_amount = total
             order.save(update_fields=["total_amount"])
+            
+            send_order_confirmation_to_buyer(order)
+            send_order_invoice_to_supplier(order)
+            
             created_orders.append(order)
 
         # Закрываем корзину

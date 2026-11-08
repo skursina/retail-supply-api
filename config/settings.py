@@ -43,6 +43,7 @@ INSTALLED_APPS = [
 
     'users',
     'products',
+    'orders',
 ]
 
 MIDDLEWARE = [
@@ -142,6 +143,8 @@ MAILERS = {
     },
 }
 
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DEFAULT_FROM_EMAIL = "noreply@shop.local"
 
 AUTH_USER_MODEL = "users.User"
 
