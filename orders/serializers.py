@@ -1,4 +1,7 @@
-from .models import Address
+from rest_framework import serializers
+
+from .models import Address, Cart, CartItem
+from products.models import SupplierProduct
 
 
 class AddressSerializer(serializers.ModelSerializer):
@@ -26,3 +29,58 @@ class AddressSerializer(serializers.ModelSerializer):
                 buyer=instance.buyer, is_default=True
             ).update(is_default=False)
         return super().update(instance, validated_data)
+
+
+class CartItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(
+        source="supplier_product.product.name", read_only=True
+    )
+    supplier_name = serializers.CharField(
+        source="supplier_product.supplier.company_name", read_only=True
+    )
+    price = serializers.DecimalField(
+        source="supplier_product.price",
+        max_digits=12, decimal_places=2, read_only=True,
+    )
+    line_total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CartItem
+        fields = [
+            "id", "supplier_product", "product_name",
+            "supplier_name", "price", "quantity", "line_total",
+        ]
+        read_only_fields = ["id", "price", "product_name", "supplier_name", "line_total"]
+
+    def get_line_total(self, obj):
+        return obj.supplier_product.price * obj.quantity
+
+    def validate(self, attrs):
+        sp = attrs.get("supplier_product") or (
+            self.instance.supplier_product if self.instance else None
+        )
+        qty = attrs.get("quantity", self.instance.quantity if self.instance else 1)
+        if sp and not sp.is_available:
+            raise serializers.ValidationError(
+                "Товар недоступен для заказа у этого поставщика."
+            )
+        if sp and qty > sp.quantity:
+            raise serializers.ValidationError(
+                f"На складе только {sp.quantity} шт."
+            )
+        return attrs
+
+
+class CartSerializer(serializers.ModelSerializer):
+    items = CartItemSerializer(many=True, read_only=True)
+    total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Cart
+        fields = ["id", "is_active", "created_at", "updated_at", "items", "total"]
+
+    def get_total(self, obj):
+        return sum(
+            (item.supplier_product.price * item.quantity for item in obj.items.all()),
+            0,
+        )
