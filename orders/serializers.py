@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Address, Cart, CartItem
+from .models import Address, Cart, CartItem, Order, OrderItem
 from products.models import SupplierProduct
 
 
@@ -84,3 +84,46 @@ class CartSerializer(serializers.ModelSerializer):
             (item.supplier_product.price * item.quantity for item in obj.items.all()),
             0,
         )
+
+
+class OrderConfirmSerializer(serializers.Serializer):
+    address_id = serializers.IntegerField()
+
+    def validate_address_id(self, value):
+        user = self.context["request"].user
+        if not Address.objects.filter(pk=value, buyer=user).exists():
+            raise serializers.ValidationError(
+                "Адрес не найден или принадлежит другому пользователю."
+            )
+        return value
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    line_total = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrderItem
+        fields = [
+            "id", "product", "product_name", "unit",
+            "quantity", "price", "line_total",
+        ]
+        read_only_fields = fields
+
+    def get_line_total(self, obj):
+        return obj.price * obj.quantity
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
+    supplier_name = serializers.CharField(
+        source="supplier.company_name", read_only=True
+    )
+    delivery_address = AddressSerializer(read_only=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            "id", "number", "status", "supplier", "supplier_name",
+            "total_amount", "delivery_address", "created_at", "items",
+        ]
+        read_only_fields = fields
