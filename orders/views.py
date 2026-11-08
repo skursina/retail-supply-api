@@ -1,10 +1,14 @@
 from django.db import transaction
+from django.shortcuts import get_object_or_404
+from collections import defaultdict
 
 from rest_framework import generics, status
-from rest_framework.views import APIView, Response
+from rest_framework.views import APIView
+from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.exceptions import ValidationError
 
+from products.models import SupplierProduct
 from .models import (
     Address, 
     Cart, CartItem, 
@@ -16,13 +20,20 @@ from .serializers import (
     OrderSerializer, OrderConfirmSerializer, OrderStatusSerializer
     )
 from .emails import (
-    send_order_confirmation_to_buyer,
-    send_order_invoice_to_supplier,
+    send_order_notifications, 
+    send_order_status_email,
 )
 
 
+class IsBuyer(BasePermission):
+    message = "Доступно только покупателям."
+
+    def has_permission(self, request, view):
+        return bool(request.user.is_authenticated and
+                    request.user.role == request.user.Role.BUYER)
+
+
 class AddressListCreateView(generics.ListCreateAPIView):
-    """Список и создание адресов покупателя."""
     serializer_class = AddressSerializer
     permission_classes = [IsAuthenticated]
 
@@ -31,7 +42,6 @@ class AddressListCreateView(generics.ListCreateAPIView):
 
 
 class AddressDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Просмотр, изменение и удаление адреса."""
     serializer_class = AddressSerializer
     permission_classes = [IsAuthenticated]
 
@@ -57,37 +67,44 @@ class CartView(generics.RetrieveAPIView):
 class CartItemCreateView(generics.CreateAPIView):
     """Добавить позицию в корзину (или увеличить количество)."""
     serializer_class = CartItemSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsBuyer]
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        cart = get_active_cart(request.user)
-        sp = serializer.validated_data["supplier_product"]
-        qty = serializer.validated_data.get("quantity", 1)
+        # Сериализатор проверяет предложение, но проверяем его повторно под блокировкой.
+        sp = SupplierProduct.objects.select_for_update().select_related(
+            "product", "supplier"
+        ).get(pk=serializer.validated_data["supplier_product"].pk)
 
+        qty = serializer.validated_data.get("quantity", 1)
+        if not (sp.is_available and sp.product.is_active and sp.supplier.is_accepting_orders):
+            raise ValidationError({"supplier_product": "Предложение недоступно"})
+        
+        cart = get_active_cart(request.user)
         item, created = CartItem.objects.get_or_create(
-            cart=cart, supplier_product=sp,
-            defaults={"quantity": qty},
+            cart=cart, supplier_product=sp, defaults={"quantity": qty}
         )
+
+        new_qty = qty if created else item.quantity + qty
+        if new_qty > sp.quantity:
+            raise ValidationError({"quantity": f"На складе только {sp.quantity} шт."})
         if not created:
-            new_qty = item.quantity + qty
-            if new_qty > sp.quantity:
-                raise ValidationError(
-                    {"quantity": f"На складе только {sp.quantity} шт."}
-                )
             item.quantity = new_qty
             item.save(update_fields=["quantity"])
 
-        out = CartItemSerializer(item, context=self.get_serializer_context())
-        return Response(out.data, status=201 if created else 200)
+        return Response(
+            CartItemSerializer(item, context=self.get_serializer_context()).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class CartItemDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Изменить количество или удалить позицию."""
     serializer_class = CartItemSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsBuyer]
 
     def get_queryset(self):
         return CartItem.objects.filter(
@@ -97,98 +114,78 @@ class CartItemDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 class OrderConfirmView(APIView):
     """Подтверждение заказа: разбивает корзину по поставщикам."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsBuyer]
 
     @transaction.atomic
     def post(self, request):
-        serializer = OrderConfirmSerializer(
-            data=request.data, context={"request": request},
-        )
+        serializer = OrderConfirmSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        address = Address.objects.get(pk=serializer.validated_data["address_id"])
 
-        if not request.user.email:
-            return Response(
-                {"error": "Укажите email в профиле, чтобы получить подтверждение"},
-                status=400,
-            )
-
-        cart = (
-            Cart.objects
-            .filter(buyer=request.user, is_active=True)
-            .prefetch_related(
-                "items__supplier_product__product",
-                "items__supplier_product__supplier",
-            )
-            .first()
+        address = Address.objects.get(
+            pk=serializer.validated_data["address_id"], buyer=request.user
         )
-        if not cart or not cart.items.exists():
-            return Response(
-                {"error": "Корзина пуста"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-                
-        # Валидация и группировка по поставщикам
-        grouped: dict = {}
-        for item in cart.items.select_related(
-            "supplier_product__supplier",
-            "supplier_product__product",
-        ):
-            sp = item.supplier_product
-            if not sp.is_available:
-                return Response(
-                    {"error": f"Товар «{sp.product.name}» недоступен"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        if not request.user.email:
+            raise ValidationError({"email": "Укажите email в профиле"})
+
+        # Блокируем корзину, чтобы два подтверждения не создали два набора заказов.
+        cart = Cart.objects.select_for_update().filter(
+            buyer=request.user, is_active=True
+        ).first()
+        if cart is None:
+            raise ValidationError({"cart": "Корзина пуста"})
+        cart_items = list(CartItem.objects.filter(cart=cart).order_by("id"))
+        if not cart_items:
+            raise ValidationError({"cart": "Корзина пуста"})
+
+        # Блокировки предложений в едином порядке уменьшают риск взаимных блокировок.
+        offer_ids = sorted({item.supplier_product_id for item in cart_items})
+        offers = {
+            sp.pk: sp for sp in SupplierProduct.objects.select_for_update()
+            .select_related("product", "supplier")
+            .filter(pk__in=offer_ids).order_by("pk")
+        }
+        grouped = defaultdict(list)
+        for item in cart_items:
+            sp = offers.get(item.supplier_product_id)
+            if sp is None or not (sp.is_available and sp.product.is_active
+                                  and sp.supplier.is_accepting_orders):
+                raise ValidationError({"cart": "Один из товаров недоступен для заказа"})
             if item.quantity > sp.quantity:
-                return Response(
-                    {"error": (
-                        f"«{sp.product.name}»: на складе только "
-                        f"{sp.quantity} шт., в корзине {item.quantity}"
-                    )},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            grouped.setdefault(sp.supplier, []).append(item)
+                raise ValidationError({
+                    "quantity": f"«{sp.product.name}»: на складе {sp.quantity} шт."
+                })
+            grouped[sp.supplier_id].append((item, sp))
 
         created_orders = []
-        for supplier, items in grouped.items():
+        for supplier_id, items in grouped.items():
             order = Order.objects.create(
-                buyer=request.user,
-                supplier=supplier,
+                buyer=request.user, supplier_id=supplier_id,
+                delivery_address=address, delivery_address_text=str(address),
                 status=Order.Status.NEW,
-                delivery_address=address,
             )
             total = 0
-            for item in items:
-                sp = item.supplier_product
+            for item, sp in items:
                 OrderItem.objects.create(
-                    order=order,
-                    supplier_product=sp,
-                    product=sp.product,
-                    product_name=sp.product.name,
-                    unit=sp.product.unit,
-                    quantity=item.quantity,
-                    price=sp.price,
+                    order=order, supplier_product=sp, product=sp.product,
+                    product_name=sp.product.name, unit=sp.product.unit,
+                    quantity=item.quantity, price=sp.price,
                 )
                 total += sp.price * item.quantity
-                # Списание остатка
                 sp.quantity -= item.quantity
                 sp.is_available = sp.quantity > 0
                 sp.save(update_fields=["quantity", "is_available"])
 
             order.total_amount = total
             order.save(update_fields=["total_amount"])
-            
-            send_order_confirmation_to_buyer(order)
-            send_order_invoice_to_supplier(order)
-            
             created_orders.append(order)
 
-        # Закрываем корзину
-        cart.items.all().delete()
+        CartItem.objects.filter(cart=cart).delete()
         cart.is_active = False
         cart.save(update_fields=["is_active"])
 
+        for order in created_orders:
+            transaction.on_commit(lambda order_id=order.pk: send_order_notifications(order_id))
+        
         return Response(
             OrderSerializer(created_orders, many=True).data,
             status=status.HTTP_201_CREATED,
@@ -199,28 +196,32 @@ class IsSupplierOfOrderOrAdmin(BasePermission):
     """Статус может менять поставщик заказа или админ."""
 
     def has_object_permission(self, request, view, obj):
-        if request.user.is_staff:
-            return True
-        return obj.supplier.user_id == request.user.id
+        return bool(request.user.is_staff or (
+            request.user.role == request.user.Role.SUPPLIER
+            and obj.supplier.user_id == request.user.pk
+        ))
+
+
+def visible_orders(user):
+    qs = Order.objects.select_related(
+        "supplier", "delivery_address", "buyer"
+    ).prefetch_related("items")
+
+    if user.is_staff:
+        return qs
+    
+    if user.role == user.Role.SUPPLIER:
+        return qs.filter(supplier__user=user)
+    
+    return qs.filter(buyer=user)
 
 
 class OrderListView(generics.ListAPIView):
-    """Заказы пользователя: покупатель — свои, поставщик — адресованные ему."""
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        qs = (
-            Order.objects
-            .select_related("supplier", "delivery_address", "buyer")
-            .prefetch_related("items")
-        )
-        if user.is_staff:
-            return qs
-        if user.role == user.Role.SUPPLIER:
-            return qs.filter(supplier__user=user)
-        return qs.filter(buyer=user)
+        return visible_orders(self.request.user)
 
 
 class OrderDetailView(generics.RetrieveAPIView):
@@ -228,21 +229,10 @@ class OrderDetailView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        user = self.request.user
-        qs = (
-            Order.objects
-            .select_related("supplier", "delivery_address", "buyer")
-            .prefetch_related("items")
-        )
-        if user.is_staff:
-            return qs
-        if user.role == user.Role.SUPPLIER:
-            return qs.filter(supplier__user=user)
-        return qs.filter(buyer=user)
+        return visible_orders(self.request.user)
 
 
 class OrderStatusUpdateView(generics.UpdateAPIView):
-    """PATCH /api/orders/<id>/status/ — меняет статус."""
     serializer_class = OrderStatusSerializer
     permission_classes = [IsAuthenticated, IsSupplierOfOrderOrAdmin]
     http_method_names = ["patch", "put"]
@@ -250,10 +240,34 @@ class OrderStatusUpdateView(generics.UpdateAPIView):
     def get_queryset(self):
         return Order.objects.select_related("supplier")
 
-    def perform_update(self, serializer):
-        old_status = serializer.instance.status
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+
+        # Повторно читаем заказ под блокировкой перед проверкой перехода статуса.
+        order = get_object_or_404(self.get_queryset().select_for_update(), pk=kwargs["pk"])
+        self.check_object_permissions(request, order)
+        serializer = self.get_serializer(order, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        old_status = order.status
+        new_status = serializer.validated_data.get("status", old_status)
+        if old_status != new_status and new_status in (
+            Order.Status.CANCELLED, Order.Status.REJECTED
+        ):
+            items = list(OrderItem.objects.filter(order=order))
+            ids = sorted({item.supplier_product_id for item in items})
+            offers = {
+                sp.pk: sp for sp in SupplierProduct.objects.select_for_update()
+                .filter(pk__in=ids).order_by("pk")
+            }
+            for item in items:
+                sp = offers[item.supplier_product_id]
+                sp.quantity += item.quantity
+                sp.is_available = True
+                sp.save(update_fields=["quantity", "is_available"])
+
         order = serializer.save()
         if order.status != old_status:
-            # Уведомим покупателя о смене статуса
-            from .emails import send_order_status_email
-            send_order_status_email(order)
+            transaction.on_commit(lambda order_id=order.pk: send_order_status_email(order_id))
+            
+        return Response(self.get_serializer(order).data)

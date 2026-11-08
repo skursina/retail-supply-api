@@ -128,6 +128,17 @@ class Order(models.Model):
         default=Status.NEW,
         verbose_name="Статус",
     )
+    delivery_address = models.ForeignKey(
+        "Address", 
+        on_delete=models.SET_NULL, 
+        null=True, blank=True,
+        related_name="orders", 
+        verbose_name="Адрес доставки",
+    )
+    delivery_address_text = models.TextField(
+        blank=True, 
+        verbose_name="Адрес доставки на момент заказа",
+    )
     total_amount = models.DecimalField(
         max_digits=14,
         decimal_places=2,

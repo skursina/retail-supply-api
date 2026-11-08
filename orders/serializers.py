@@ -134,7 +134,25 @@ class OrderStatusSerializer(serializers.ModelSerializer):
         model = Order
         fields = ["status"]
 
+    # Допустимые переходы; терминальные статусы нельзя менять.
+    TRANSITIONS = {
+        Order.Status.NEW: {Order.Status.CONFIRMED, Order.Status.REJECTED, Order.Status.CANCELLED},
+        Order.Status.CONFIRMED: {Order.Status.PROCESSING, Order.Status.CANCELLED},
+        Order.Status.PROCESSING: {Order.Status.SHIPPED, Order.Status.CANCELLED},
+        Order.Status.SHIPPED: {Order.Status.COMPLETED},
+        Order.Status.COMPLETED: set(),
+        Order.Status.REJECTED: set(),
+        Order.Status.CANCELLED: set(),
+    }
+
     def validate_status(self, value):
-        if value not in Order.Status.values:
-            raise serializers.ValidationError("Неизвестный статус")
+        if self.instance is None:
+            raise serializers.ValidationError("Заказ не найден")
+        if value == self.instance.status:
+            return value
+        if value not in self.TRANSITIONS.get(self.instance.status, set()):
+            raise serializers.ValidationError(
+                f"Переход {self.instance.status} → {value} недопустим"
+            )
         return value
+    
