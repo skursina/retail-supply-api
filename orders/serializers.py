@@ -61,7 +61,6 @@ class CartItemSerializer(serializers.ModelSerializer):
     def get_line_total(self, obj):
         return obj.supplier_product.price * obj.quantity
 
-
     def validate_supplier_product(self, value):
         """Запрещаем заменять товар в существующей позиции корзины."""
         if self.instance is not None:
@@ -78,7 +77,11 @@ class CartItemSerializer(serializers.ModelSerializer):
             self.instance.supplier_product if self.instance else None
         )
         qty = attrs.get("quantity", self.instance.quantity if self.instance else 1)
-        if sp and not sp.is_available:
+        if sp and not (
+            sp.is_available
+            and sp.product.is_active
+            and sp.supplier.is_accepting_orders
+        ):
             raise serializers.ValidationError(
                 "Товар недоступен для заказа у этого поставщика."
             )
@@ -141,8 +144,16 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = [
-            "id", "number", "status", "supplier", "supplier_name",
-            "total_amount", "delivery_address", "created_at", "items",
+            "id", 
+            "number", 
+            "status", 
+            "supplier", 
+            "supplier_name",
+            "total_amount", 
+            "delivery_address", 
+            "delivery_address_text",
+            "created_at", 
+            "items",
         ]
         read_only_fields = fields
 

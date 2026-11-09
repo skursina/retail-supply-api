@@ -463,6 +463,51 @@ class MultiSupplierOrderTests(TestCase):
         first_order.refresh_from_db()
         self.assertEqual(first_order.status, Order.Status.NEW)
 
+    def test_order_address_survives_address_deletion(self):
+        """Адрес доставки сохраняется в истории заказа."""
+
+        # Оформляем заказ с существующим адресом.
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                "/api/orders/confirm/",
+                {"address_id": self.address.id},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201)
+
+        order = Order.objects.filter(
+            buyer=self.buyer
+        ).first()
+
+        original_address = str(self.address)
+
+        # Удаляем адрес через API.
+        delete_response = self.client.delete(
+            f"/api/addresses/{self.address.id}/"
+        )
+
+        self.assertEqual(delete_response.status_code, 204)
+
+        # Проверяем заказ после удаления адреса.
+        order.refresh_from_db()
+
+        self.assertIsNone(order.delivery_address)
+        self.assertEqual(
+            order.delivery_address_text,
+            original_address,
+        )
+
+        # Проверяем, что сохранённый адрес виден через API.
+        detail_response = self.client.get(
+            f"/api/orders/{order.id}/"
+        )
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(
+            detail_response.data["delivery_address_text"],
+            original_address,
+        )
 
 class CartSecurityTests(TestCase):
     """Проверки безопасности редактирования корзины."""
@@ -625,3 +670,194 @@ class CartSecurityTests(TestCase):
         # Исходная позиция не изменилась.
         self.item.refresh_from_db()
         self.assertEqual(self.item.quantity, 2)
+
+    def test_cannot_update_cart_when_supplier_disabled(self):
+        """Нельзя менять количество после отключения поставщика."""
+
+        # Поставщик отключает приём заказов.
+        supplier = self.offers[0].supplier
+        supplier.is_accepting_orders = False
+        supplier.save(update_fields=["is_accepting_orders"])
+
+        # Покупатель пытается увеличить количество.
+        response = self.client.patch(
+            f"/api/cart/items/{self.item.id}/",
+            {"quantity": 5},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+        # В корзине остаётся прежнее количество.
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.quantity, 2)
+        
+
+class AddressAPITests(TestCase):
+    """Проверки API адресов доставки."""
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.buyer = User.objects.create_user(
+            username="address_buyer",
+            email="address_buyer@example.com",
+            password="StrongPassword2026!",
+            role=User.Role.BUYER,
+            is_active=True,
+        )
+
+        self.other_buyer = User.objects.create_user(
+            username="other_address_buyer",
+            password="StrongPassword2026!",
+            role=User.Role.BUYER,
+            is_active=True,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.buyer)
+
+        self.url = "/api/addresses/"
+
+    def test_create_address(self):
+        """Покупатель может добавить адрес доставки."""
+
+        response = self.client.post(
+            self.url,
+            {
+                "title": "Дом",
+                "city": "Москва",
+                "street": "Ленина",
+                "house": "10",
+                "is_default": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        address = Address.objects.get(buyer=self.buyer)
+
+        self.assertEqual(address.city, "Москва")
+        self.assertTrue(address.is_default)
+
+    def test_update_address(self):
+        """Покупатель может изменить свой адрес."""
+
+        address = Address.objects.create(
+            buyer=self.buyer,
+            city="Москва",
+            street="Ленина",
+            house="10",
+        )
+
+        response = self.client.patch(
+            f"/api/addresses/{address.id}/",
+            {"street": "Пушкина"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+        address.refresh_from_db()
+        self.assertEqual(address.street, "Пушкина")
+
+    def test_delete_address(self):
+        """Покупатель может удалить свой адрес."""
+
+        address = Address.objects.create(
+            buyer=self.buyer,
+            city="Москва",
+            street="Ленина",
+            house="10",
+        )
+
+        response = self.client.delete(
+            f"/api/addresses/{address.id}/"
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(
+            Address.objects.filter(pk=address.id).exists()
+        )
+
+    def test_cannot_access_other_users_address(self):
+        """Чужие адреса недоступны."""
+
+        address = Address.objects.create(
+            buyer=self.buyer,
+            city="Москва",
+            street="Ленина",
+            house="10",
+        )
+
+        self.client.force_authenticate(user=self.other_buyer)
+
+        response = self.client.get(
+            f"/api/addresses/{address.id}/"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+        response = self.client.delete(
+            f"/api/addresses/{address.id}/"
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+        self.assertTrue(
+            Address.objects.filter(pk=address.id).exists()
+        )
+
+    def test_only_one_default_address(self):
+        """Новый основной адрес заменяет предыдущий."""
+
+        # Создаём первый адрес по умолчанию.
+        first_response = self.client.post(
+            "/api/addresses/",
+            {
+                "title": "Дом",
+                "city": "Москва",
+                "street": "Ленина",
+                "house": "10",
+                "is_default": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, 201)
+
+        first_id = first_response.data["id"]
+
+        # Создаём второй адрес и делаем его основным.
+        second_response = self.client.post(
+            "/api/addresses/",
+            {
+                "title": "Работа",
+                "city": "Москва",
+                "street": "Пушкина",
+                "house": "20",
+                "is_default": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(second_response.status_code, 201)
+
+        # Проверяем состояние адресов.
+        first_address = Address.objects.get(pk=first_id)
+        second_address = Address.objects.get(
+            pk=second_response.data["id"]
+        )
+
+        self.assertFalse(first_address.is_default)
+        self.assertTrue(second_address.is_default)
+
+        # У пользователя ровно один основной адрес.
+        self.assertEqual(
+            Address.objects.filter(
+                buyer=self.buyer,
+                is_default=True,
+            ).count(),
+            1,
+        )        
