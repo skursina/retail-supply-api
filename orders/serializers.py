@@ -50,11 +50,29 @@ class CartItemSerializer(serializers.ModelSerializer):
             "id", "supplier_product", "product_name",
             "supplier_name", "price", "quantity", "line_total",
         ]
-        read_only_fields = ["id", "price", "product_name", "supplier_name", "line_total"]
+        read_only_fields = [
+            "id", 
+            "price", 
+            "product_name", 
+            "supplier_name", 
+            "line_total",
+        ]
 
     def get_line_total(self, obj):
         return obj.supplier_product.price * obj.quantity
 
+
+    def validate_supplier_product(self, value):
+        """Запрещаем заменять товар в существующей позиции корзины."""
+        if self.instance is not None:
+            if value.pk != self.instance.supplier_product_id:
+                raise serializers.ValidationError(
+                    "Нельзя заменить товар в корзине. "
+                    "Удалите позицию и добавьте новую."
+                )
+
+        return value
+    
     def validate(self, attrs):
         sp = attrs.get("supplier_product") or (
             self.instance.supplier_product if self.instance else None

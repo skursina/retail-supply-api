@@ -75,3 +75,13 @@ class ProductSerializer(serializers.ModelSerializer):
             "parameter_value",
             "supplier_offers",
         ]
+
+
+class SupplierOrderSettingsSerializer(serializers.ModelSerializer):
+    """Настройки приёма заказов поставщиком."""
+
+    class Meta:
+        model = SupplierProfile
+        fields = ["id", "company_name", "is_accepting_orders"]
+        read_only_fields = ["id", "company_name"]
+        
