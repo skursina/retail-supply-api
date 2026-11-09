@@ -144,3 +144,102 @@ class UserRegistrationTests(APITestCase):
         self.assertEqual(after_activation.status_code, 200)
         self.assertIn("token", after_activation.data)
         self.assertEqual(after_activation.data["role"], "buyer")        
+
+
+    def test_password_reset_email(self):
+        """Активный пользователь может запросить сброс пароля."""
+
+        User = get_user_model()
+
+        User.objects.create_user(
+            username="reset_test_user",
+            email="reset_test@example.com",
+            password="OldStrongPassword2026!",
+            is_active=True,
+        )
+
+        response = self.client.post(
+            "/api/auth/users/reset_password/",
+            {"email": "reset_test@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("reset_test@example.com", mail.outbox[0].to)
+
+
+    def test_password_reset_confirmation(self):
+        """Пользователь может восстановить пароль через API."""
+        from django.contrib.auth.tokens import default_token_generator
+        from django.utils.encoding import force_bytes
+        from django.utils.http import urlsafe_base64_encode
+
+        User = get_user_model()
+
+        user = User.objects.create_user(
+            username="password_reset_user",
+            email="password_reset@example.com",
+            password="OldStrongPassword2026!",
+            is_active=True,
+        )
+
+        # 1. Запрашиваем письмо восстановления
+        response = self.client.post(
+            "/api/auth/users/reset_password/",
+            {"email": user.email},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(len(mail.outbox), 1)
+
+        # 2. Генерируем токен для тестового пользователя
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+
+        # 3. Устанавливаем новый пароль
+        response = self.client.post(
+            "/api/auth/users/reset_password_confirm/",
+            {
+                "uid": uid,
+                "token": token,
+                "new_password": "NewStrongPassword2026!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 204)
+
+        # 4. Проверяем изменение пароля в базе
+        user.refresh_from_db()
+        self.assertTrue(
+            user.check_password("NewStrongPassword2026!")
+        )
+        self.assertFalse(
+            user.check_password("OldStrongPassword2026!")
+        )
+
+        # 5. Старый пароль больше не работает
+        old_login = self.client.post(
+            "/api/users/login/",
+            {
+                "username": user.username,
+                "password": "OldStrongPassword2026!",
+            },
+            format="json",
+        )
+        self.assertEqual(old_login.status_code, 400)
+
+        # 6. Новый пароль работает
+        new_login = self.client.post(
+            "/api/users/login/",
+            {
+                "username": user.username,
+                "password": "NewStrongPassword2026!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(new_login.status_code, 200)
+        self.assertIn("token", new_login.data)
