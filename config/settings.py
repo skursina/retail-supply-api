@@ -155,6 +155,7 @@ AUTH_USER_MODEL = "users.User"
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',        
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -162,7 +163,19 @@ REST_FRAMEWORK = {
 }
 
 DJOSER = {
+    # Ссылка для подтверждения регистрации
+    'ACTIVATION_URL': 'activate/{uid}/{token}',
+
+    # Требовать активацию аккаунта через email
+    'SEND_ACTIVATION_EMAIL': True,
+
+    # Отправлять уведомление после успешной активации
+    'SEND_CONFIRMATION_EMAIL': True,
+
+    # Восстановление пароля
     'PASSWORD_RESET_CONFIRM_URL': 'password/reset/confirm/{uid}/{token}',
+
+    # Токенная авторизация
     'TOKEN_MODEL': 'rest_framework.authtoken.models.Token',
 }
 
