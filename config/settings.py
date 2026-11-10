@@ -193,3 +193,30 @@ if EMAIL_USE_TLS and EMAIL_USE_SSL:
 EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "15"))
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@shop.local")
 ORDER_ADMIN_EMAIL = os.getenv("ORDER_ADMIN_EMAIL", "")
+
+# Celery
+CELERY_BROKER_URL = os.getenv(
+    "CELERY_BROKER_URL",
+    "redis://localhost:6379/0",
+)
+
+CELERY_RESULT_BACKEND = os.getenv(
+    "CELERY_RESULT_BACKEND",
+    "redis://localhost:6379/1",
+)
+
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_ACCEPT_CONTENT = ["json"]
+
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+
+# В обычном режиме задачи отправляются в Redis.
+# В тестах можем переопределить настройку через override_settings.
+CELERY_TASK_ALWAYS_EAGER = env_bool(
+    "CELERY_TASK_ALWAYS_EAGER",
+    False,
+)
+
+CELERY_TASK_EAGER_PROPAGATES = True

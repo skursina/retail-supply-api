@@ -3,15 +3,13 @@ from django.core.exceptions import ValidationError
 
 from .models import Order, OrderItem
 from .serializers import OrderStatusSerializer
-from .emails import send_order_status_email
+from .tasks import send_order_status_email_task
 from products.models import SupplierProduct
 
 
 def validate_order_status_transition(order, new_status):
     """
-    Проверяет, можно ли перевести заказ
-    из текущего статуса в новый.
-
+    Проверяет, можно ли перевести заказ из текущего статуса в новый.
     Использует существующие правила переходов.
     """
     serializer = OrderStatusSerializer(
@@ -31,9 +29,8 @@ def change_order_status(order_id, new_status):
     """
     Изменяет статус заказа.
 
-    Проверяет допустимость перехода,
-    возвращает остатки при отмене
-    и отправляет уведомление после commit.
+    Проверяет допустимость перехода, 
+    возвращает остатки при отмене и отправляет уведомление после commit.
     """
 
     # Блокируем заказ от параллельных изменений.
@@ -86,7 +83,7 @@ def change_order_status(order_id, new_status):
 
     # Отправляем уведомление после commit.
     transaction.on_commit(
-        lambda order_id=order.pk: send_order_status_email(order_id)
+        lambda order_id=order.pk: send_order_status_email_task.delay(order_id)
     )
 
     return order

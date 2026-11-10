@@ -1,4 +1,5 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.core import mail
 from django.core.exceptions import ValidationError
@@ -123,6 +124,7 @@ class DisabledSupplierTests(TestCase):
         self.assertEqual(self.offer.quantity, 10)
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class MultiSupplierOrderTests(TestCase):
     """Проверки оформления заказов от нескольких поставщиков."""
 
@@ -513,6 +515,45 @@ class MultiSupplierOrderTests(TestCase):
             original_address,
         )
 
+    @patch("orders.views.send_order_notifications_task.delay")
+    def test_order_notifications_are_queued_after_commit(self, mock_delay):
+        """Уведомления ставятся в очередь после подтверждения транзакции."""
+
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            response = self.client.post(
+                "/api/orders/confirm/",
+                {"address_id": self.address.id},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201)
+
+        # Пока on_commit не выполнен, задач в очереди нет.
+        mock_delay.assert_not_called()
+
+        # Два поставщика — два заказа и две отложенные задачи.
+        self.assertEqual(len(callbacks), 2)
+
+        # Имитируем успешное завершение транзакции.
+        for callback in callbacks:
+            callback()
+
+        order_ids = set(
+            Order.objects.filter(buyer=self.buyer).values_list(
+                "id", flat=True
+            )
+        )
+
+        self.assertEqual(mock_delay.call_count, 2)
+
+        queued_ids = {
+            call.args[0]
+            for call in mock_delay.call_args_list
+        }
+
+        self.assertEqual(queued_ids, order_ids)
+
+
 class CartSecurityTests(TestCase):
     """Проверки безопасности редактирования корзины."""
 
@@ -867,6 +908,7 @@ class AddressAPITests(TestCase):
         )        
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class OrderStatusServiceTests(TestCase):
     """Тесты общего сервиса изменения статусов."""
 
@@ -942,6 +984,34 @@ class OrderStatusServiceTests(TestCase):
             Order.Status.CONFIRMED,
         )
 
+    @patch("orders.services.send_order_status_email_task.delay")
+    def test_status_email_queued_after_commit(self, mock_delay):
+        """Уведомление ставится в очередь после коммита."""
+
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            change_order_status(
+                self.order.id,
+                Order.Status.CONFIRMED,
+            )
+
+        self.order.refresh_from_db()
+        self.assertEqual(
+            self.order.status,
+            Order.Status.CONFIRMED,
+        )
+
+        # Пока транзакция не подтверждена, Celery не вызывается.
+        mock_delay.assert_not_called()
+
+        # Проверяем наличие отложенного вызова.
+        self.assertEqual(len(callbacks), 1)
+
+        # Имитируем успешное завершение транзакции.
+        callbacks[0]()
+
+        # В очередь передаётся ID нужного заказа.
+        mock_delay.assert_called_once_with(self.order.id)
+        
     def test_invalid_status_transition(self):
         """Недопустимый переход отклоняется."""
 
@@ -978,7 +1048,10 @@ class OrderStatusServiceTests(TestCase):
         self.assertEqual(self.offer.quantity, 10)
 
 
-@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    CELERY_TASK_ALWAYS_EAGER=True,
+)
 class OrderAdminTests(TestCase):
     """Проверка изменения статусов через Django Admin."""
 

@@ -20,10 +20,7 @@ from .serializers import (
     CartSerializer, CartItemSerializer,
     OrderSerializer, OrderConfirmSerializer, OrderStatusSerializer
     )
-from .emails import (
-    send_order_notifications, 
-    send_order_status_email,
-)
+from .tasks import send_order_notifications_task
 from .services import change_order_status
 
 
@@ -186,7 +183,11 @@ class OrderConfirmView(APIView):
         cart.save(update_fields=["is_active"])
 
         for order in created_orders:
-            transaction.on_commit(lambda order_id=order.pk: send_order_notifications(order_id))
+            transaction.on_commit(
+                lambda order_id=order.pk: (
+                    send_order_notifications_task.delay(order_id)
+                )
+            )
         
         return Response(
             OrderSerializer(created_orders, many=True).data,
