@@ -219,3 +219,27 @@ class SupplierProduct(models.Model):
         return (
             f"{self.product.name} - {self.supplier.company_name}"
         )
+
+
+class ProductImportJob(models.Model):
+    """История фоновых импортов YAML-каталогов."""
+
+    task_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+    )
+
+    supplier = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="product_import_jobs",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Импорт {self.task_id} — {self.supplier}"

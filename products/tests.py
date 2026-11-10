@@ -8,10 +8,12 @@ from django.core.management.base import CommandError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from .models import SupplierProduct, SupplierProfile
 from products.tasks import import_products_task
+from products.models import ProductImportJob
+from products.views import ProductImportStatusView
 
 
 class ProductImportTests(TestCase):
@@ -382,7 +384,7 @@ class ProductImportAPITests(TestCase):
 
         self.assertEqual(response.status_code, 403)
 
-    @patch("products.views.import_products_task.delay")
+    @patch("products.views.import_products_task.apply_async")
     def test_supplier_can_queue_import(self, mock_delay):
         self.client.force_authenticate(user=self.supplier)
         mock_delay.return_value.id = "test-task-123"
@@ -399,13 +401,18 @@ class ProductImportAPITests(TestCase):
             "test-task-123",
         )
 
+        job = ProductImportJob.objects.get(
+            task_id="test-task-123"
+        )
+        self.assertEqual(job.supplier, self.supplier)
+
         mock_delay.assert_called_once()
 
-        args = mock_delay.call_args.args
-        self.assertEqual(args[1], self.supplier.pk)
-        self.assertIn("shop: Test Shop", args[0])
+        task_args = mock_delay.call_args.kwargs["args"]
+        self.assertEqual(task_args[1], self.supplier.pk)
+        self.assertIn("shop: Test Shop", task_args[0])
 
-    @patch("products.views.import_products_task.delay")
+    @patch("products.views.import_products_task.apply_async")
     def test_rejects_wrong_file_extension(self, mock_delay):
         self.client.force_authenticate(user=self.supplier)
 
@@ -423,7 +430,7 @@ class ProductImportAPITests(TestCase):
         self.assertEqual(response.status_code, 400)
         mock_delay.assert_not_called()
 
-    @patch("products.views.import_products_task.delay")
+    @patch("products.views.import_products_task.apply_async")
     def test_rejects_empty_file(self, mock_delay):
         """Пустой YAML нельзя отправить на импорт."""
         self.client.force_authenticate(user=self.supplier)
@@ -443,7 +450,7 @@ class ProductImportAPITests(TestCase):
         self.assertEqual(response.status_code, 400)
         mock_delay.assert_not_called()
 
-    @patch("products.views.import_products_task.delay")
+    @patch("products.views.import_products_task.apply_async")
     def test_rejects_oversized_file(self, mock_delay):
         """YAML больше 2 МБ отклоняется."""
         self.client.force_authenticate(user=self.supplier)
@@ -463,7 +470,7 @@ class ProductImportAPITests(TestCase):
         self.assertEqual(response.status_code, 400)
         mock_delay.assert_not_called()
 
-    @patch("products.views.import_products_task.delay")
+    @patch("products.views.import_products_task.apply_async")
     def test_returns_503_when_broker_unavailable(self, mock_delay):
         """Недоступный Redis не должен приводить к необработанной ошибке."""
         from kombu.exceptions import OperationalError
@@ -480,3 +487,100 @@ class ProductImportAPITests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("detail", response.data)
         mock_delay.assert_called_once()
+
+
+
+class ProductImportStatusAPITests(TestCase):
+    """Проверка доступа к результатам импорта."""
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.supplier = User.objects.create_user(
+            username="status_supplier",
+            password="StrongPassword2026!",
+            role=User.Role.SUPPLIER,
+        )
+
+        self.other_supplier = User.objects.create_user(
+            username="other_status_supplier",
+            password="StrongPassword2026!",
+            role=User.Role.SUPPLIER,
+        )
+
+        self.task_id = "12345678-1234-5678-1234-567812345678"
+
+        self.job = ProductImportJob.objects.create(
+            task_id=self.task_id,
+            supplier=self.supplier,
+        )
+
+        self.factory = APIRequestFactory()
+        self.view = ProductImportStatusView.as_view()
+
+    @patch("products.views.AsyncResult")
+    def test_supplier_can_view_own_import(self, mock_async):
+        mock_task = mock_async.return_value
+        mock_task.status = "SUCCESS"
+        mock_task.successful.return_value = True
+        mock_task.failed.return_value = False
+        mock_task.result = {
+            "shop": "Test Shop",
+            "created": 5,
+            "updated": 2,
+        }
+
+        request = self.factory.get("/")
+        force_authenticate(request, user=self.supplier)
+
+        response = self.view(
+            request,
+            task_id=self.task_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "SUCCESS")
+        self.assertEqual(response.data["result"]["created"], 5)
+
+    def test_supplier_cannot_view_another_supplier_import(self):
+        request = self.factory.get("/")
+        force_authenticate(request, user=self.other_supplier)
+
+        response = self.view(
+            request,
+            task_id=self.task_id,
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_unknown_import_returns_404(self):
+        request = self.factory.get("/")
+        force_authenticate(request, user=self.supplier)
+
+        response = self.view(
+            request,
+            task_id="87654321-1234-5678-1234-567812345678",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch("products.views.AsyncResult")
+    def test_supplier_can_check_failed_import(self, mock_async):
+        """Поставщик видит ошибку собственного импорта."""
+
+        mock_task = mock_async.return_value
+        mock_task.status = "FAILURE"
+        mock_task.successful.return_value = False
+        mock_task.failed.return_value = True
+
+        request = self.factory.get("/")
+        force_authenticate(request, user=self.supplier)
+
+        response = self.view(
+            request,
+            task_id=self.task_id,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "FAILURE")
+        self.assertIn("error", response.data)

@@ -6,6 +6,7 @@ from .views import (
     ProductDetailView,
     SupplierOrderSettingsView,
     ProductImportView,
+    ProductImportStatusView,
 )
 from .management.commands.export_products import ExportProductsView
 
@@ -16,5 +17,6 @@ urlpatterns = [
     path("products/<int:pk>", ProductDetailView.as_view(), name="product-detail"),
     path("export/", ExportProductsView.as_view(), name="products-export"),
     path("import/", ProductImportView.as_view(), name="product-import"),
+    path("import/status/<str:task_id>", ProductImportStatusView.as_view(), name="product-import-status"),
     path("supplier/settings/", SupplierOrderSettingsView.as_view(), name="supplier-order-settings"),
 ]
