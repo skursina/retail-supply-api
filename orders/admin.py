@@ -1,6 +1,9 @@
-from django.contrib import admin
+from django import forms
+from django.contrib import admin, messages
+from django.core.exceptions import ValidationError
 
 from .models import Cart, CartItem, Order, OrderItem, Address
+from .services import change_order_status, validate_order_status_transition
 
 
 class CartItemInline(admin.TabularInline):
@@ -45,8 +48,40 @@ class OrderItemInline(admin.TabularInline):
         return False
 
 
+class OrderAdminForm(forms.ModelForm):
+    """Форма редактирования заказа с проверкой статуса."""
+
+    class Meta:
+        model = Order
+        fields = "__all__"
+
+    def clean_status(self):
+        new_status = self.cleaned_data["status"]
+
+        # При редактировании проверяем переход
+        # относительно текущего состояния в базе.
+        if self.instance.pk:
+            current_order = Order.objects.get(
+                pk=self.instance.pk
+            )
+
+            try:
+                validate_order_status_transition(
+                    current_order,
+                    new_status,
+                )
+            except ValidationError as exc:
+                raise forms.ValidationError(
+                    exc.messages
+                ) from exc
+
+        return new_status
+    
+
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
+    form = OrderAdminForm
+    
     list_display = (
         "number",
         "buyer",
@@ -80,6 +115,44 @@ class OrderAdmin(admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         # Заказы являются историей покупок.
         return False
+
+    def save_model(self, request, obj, form, change):
+        """
+        Изменение статуса через общий сервис заказов.
+
+        Правила переходов, остатки и уведомления
+        одинаковы для API и Django Admin.
+        """
+        if not change:
+            super().save_model(request, obj, form, change)
+            return
+
+        old_order = Order.objects.get(pk=obj.pk)
+
+        if old_order.status == obj.status:
+            super().save_model(request, obj, form, change)
+            return
+
+        try:
+            change_order_status(
+                order_id=obj.pk,
+                new_status=obj.status,
+            )
+        except ValidationError as exc:
+            self.message_user(
+                request,
+                f"Не удалось изменить статус: {exc}",
+                level=messages.ERROR,
+            )
+            # Не сохраняем недопустимое изменение.
+            obj.status = old_order.status
+            return
+
+        self.message_user(
+            request,
+            "Статус заказа успешно изменён.",
+            level=messages.SUCCESS,
+        )
 
 
 @admin.register(Address)

@@ -1,8 +1,11 @@
 from decimal import Decimal
 
 from django.core import mail
+from django.core.exceptions import ValidationError
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.urls import reverse
+
 from rest_framework.test import APIClient
 
 from products.models import (
@@ -16,6 +19,7 @@ from .models import (
     Cart, CartItem, Address, 
     Order, OrderItem,
 )
+from .services import change_order_status
 
 
 class DisabledSupplierTests(TestCase):
@@ -861,3 +865,300 @@ class AddressAPITests(TestCase):
             ).count(),
             1,
         )        
+
+
+class OrderStatusServiceTests(TestCase):
+    """Тесты общего сервиса изменения статусов."""
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.buyer = User.objects.create_user(
+            username="service_buyer",
+            email="service_buyer@example.com",
+            password="StrongPassword2026!",
+            role=User.Role.BUYER,
+            is_active=True,
+        )
+
+        supplier_user = User.objects.create_user(
+            username="service_supplier",
+            password="StrongPassword2026!",
+            role=User.Role.SUPPLIER,
+            is_active=True,
+        )
+
+        self.supplier = SupplierProfile.objects.create(
+            user=supplier_user,
+            company_name="Тестовый магазин сервиса",
+        )
+
+        self.category = Category.objects.create(
+            name="Категория сервиса",
+        )
+
+        self.product = Product.objects.create(
+            category=self.category,
+            name="Товар сервиса",
+        )
+
+        self.offer = SupplierProduct.objects.create(
+            supplier=self.supplier,
+            product=self.product,
+            supplier_article="SERVICE-001",
+            price="100.00",
+            quantity=8,
+            is_available=True,
+        )
+
+        self.order = Order.objects.create(
+            buyer=self.buyer,
+            supplier=self.supplier,
+            total_amount="200.00",
+        )
+
+        OrderItem.objects.create(
+            order=self.order,
+            supplier_product=self.offer,
+            product=self.product,
+            product_name=self.product.name,
+            unit="шт.",
+            quantity=2,
+            price="100.00",
+        )
+
+    def test_valid_status_transition(self):
+        """Разрешённый переход изменяет статус."""
+
+        with self.captureOnCommitCallbacks(execute=True):
+            change_order_status(
+                self.order.id,
+                Order.Status.CONFIRMED,
+            )
+
+        self.order.refresh_from_db()
+        self.assertEqual(
+            self.order.status,
+            Order.Status.CONFIRMED,
+        )
+
+    def test_invalid_status_transition(self):
+        """Недопустимый переход отклоняется."""
+
+        self.order.status = Order.Status.COMPLETED
+        self.order.save(update_fields=["status"])
+
+        with self.assertRaises(ValidationError):
+            change_order_status(
+                self.order.id,
+                Order.Status.NEW,
+            )
+
+        self.order.refresh_from_db()
+        self.assertEqual(
+            self.order.status,
+            Order.Status.COMPLETED,
+        )
+
+    def test_rejected_order_restores_stock(self):
+        """При отклонении заказа возвращаются остатки."""
+
+        change_order_status(
+            self.order.id,
+            Order.Status.REJECTED,
+        )
+
+        self.order.refresh_from_db()
+        self.offer.refresh_from_db()
+
+        self.assertEqual(
+            self.order.status,
+            Order.Status.REJECTED,
+        )
+        self.assertEqual(self.offer.quantity, 10)
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class OrderAdminTests(TestCase):
+    """Проверка изменения статусов через Django Admin."""
+
+    def setUp(self):
+        User = get_user_model()
+
+        self.admin_user = User.objects.create_superuser(
+            username="admin_order_test",
+            email="admin_test@example.com",
+            password="StrongAdminPassword2026!",
+        )
+
+        self.buyer = User.objects.create_user(
+            username="admin_test_buyer",
+            email="buyer_admin_test@example.com",
+            password="StrongPassword2026!",
+            role=User.Role.BUYER,
+        )
+
+        supplier_user = User.objects.create_user(
+            username="admin_test_supplier",
+            password="StrongPassword2026!",
+            role=User.Role.SUPPLIER,
+        )
+
+        self.supplier = SupplierProfile.objects.create(
+            user=supplier_user,
+            company_name="Тестовый магазин админки",
+        )
+
+        self.order = Order.objects.create(
+            buyer=self.buyer,
+            supplier=self.supplier,
+            total_amount="500.00",
+        )
+
+        self.client.force_login(self.admin_user)
+
+    def test_admin_can_confirm_order_and_send_email(self):
+        """Администратор меняет статус, покупатель получает письмо."""
+
+        url = reverse(
+            "admin:orders_order_change",
+            args=[self.order.pk],
+        )
+
+        # Передаём поля формы заказа.
+        data = {
+            "status": Order.Status.CONFIRMED,
+            "delivery_address": "",
+            "delivery_address_text": "",
+            "_save": "Save",
+            "items-TOTAL_FORMS": "0",
+            "items-INITIAL_FORMS": "0",
+            "items-MIN_NUM_FORMS": "0",
+            "items-MAX_NUM_FORMS": "1000",
+        }
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(url, data)
+
+        self.order.refresh_from_db()
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            self.order.status,
+            Order.Status.CONFIRMED,
+        )
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(
+            self.buyer.email,
+            mail.outbox[0].to,
+        )
+
+    def test_admin_cannot_change_completed_order_to_new(self):
+        """Админка запрещает недопустимый переход статуса."""
+
+        # Завершённый заказ.
+        self.order.status = Order.Status.COMPLETED
+        self.order.save(update_fields=["status"])
+
+        url = reverse(
+            "admin:orders_order_change",
+            args=[self.order.pk],
+        )
+
+        data = {
+            "status": Order.Status.NEW,
+            "delivery_address": "",
+            "delivery_address_text": "",
+            "_save": "Save",
+            "items-TOTAL_FORMS": "0",
+            "items-INITIAL_FORMS": "0",
+            "items-MIN_NUM_FORMS": "0",
+            "items-MAX_NUM_FORMS": "1000",
+        }
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(url, data)
+
+        # Форма должна показать ошибку, а не перенаправление.
+        self.assertEqual(response.status_code, 200)
+
+        # Статус в базе должен остаться прежним.
+        self.order.refresh_from_db()
+        self.assertEqual(
+            self.order.status,
+            Order.Status.COMPLETED,
+        )
+
+        # Письмо не должно отправляться.
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_admin_rejection_restores_stock(self):
+        """Отклонение заказа через админку возвращает остатки."""
+
+        # Создаём категорию и товар.
+        category = Category.objects.create(
+            name="Категория для проверки админки"
+        )
+
+        product = Product.objects.create(
+            category=category,
+            name="Товар для возврата",
+        )
+
+        # Изначально на складе уже осталось 8 штук
+        # после оформления заказа на 2 штуки.
+        offer = SupplierProduct.objects.create(
+            supplier=self.supplier,
+            product=product,
+            supplier_article="ADMIN-RETURN-001",
+            price="100.00",
+            quantity=8,
+            is_available=True,
+        )
+
+        OrderItem.objects.create(
+            order=self.order,
+            supplier_product=offer,
+            product=product,
+            product_name=product.name,
+            unit="шт.",
+            quantity=2,
+            price="100.00",
+        )
+
+        url = reverse(
+            "admin:orders_order_change",
+            args=[self.order.pk],
+        )
+
+        # Отклоняем заказ через административную панель.
+        data = {
+            "status": Order.Status.REJECTED,
+            "delivery_address": "",
+            "delivery_address_text": "",
+            "_save": "Save",
+            "items-TOTAL_FORMS": "1",
+            "items-INITIAL_FORMS": "1",
+            "items-MIN_NUM_FORMS": "0",
+            "items-MAX_NUM_FORMS": "1000",
+            "items-0-id": str(self.order.items.first().pk),
+            "items-0-order": str(self.order.pk),
+        }
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(url, data)
+
+        self.assertEqual(response.status_code, 302)
+
+        self.order.refresh_from_db()
+        offer.refresh_from_db()
+
+        # Заказ отклонён.
+        self.assertEqual(
+            self.order.status,
+            Order.Status.REJECTED,
+        )
+
+        # Остаток восстановился с 8 до 10.
+        self.assertEqual(offer.quantity, 10)

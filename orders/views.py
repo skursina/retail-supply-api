@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.shortcuts import get_object_or_404
 from collections import defaultdict
 
@@ -23,6 +24,7 @@ from .emails import (
     send_order_notifications, 
     send_order_status_email,
 )
+from .services import change_order_status
 
 
 class IsBuyer(BasePermission):
@@ -233,41 +235,49 @@ class OrderDetailView(generics.RetrieveAPIView):
 
 
 class OrderStatusUpdateView(generics.UpdateAPIView):
+    """Изменение статуса заказа через общий сервис."""
+
     serializer_class = OrderStatusSerializer
-    permission_classes = [IsAuthenticated, IsSupplierOfOrderOrAdmin]
+    permission_classes = [
+        IsAuthenticated,
+        IsSupplierOfOrderOrAdmin,
+    ]
     http_method_names = ["patch", "put"]
 
     def get_queryset(self):
         return Order.objects.select_related("supplier")
 
-    @transaction.atomic
     def update(self, request, *args, **kwargs):
+        # Проверяем существование заказа и права пользователя.
+        order = self.get_object()
 
-        # Повторно читаем заказ под блокировкой перед проверкой перехода статуса.
-        order = get_object_or_404(self.get_queryset().select_for_update(), pk=kwargs["pk"])
-        self.check_object_permissions(request, order)
-        serializer = self.get_serializer(order, data=request.data, partial=True)
+        # Проверяем входные данные через DRF.
+        serializer = self.get_serializer(
+            order,
+            data=request.data,
+            partial=True,
+        )
         serializer.is_valid(raise_exception=True)
 
-        old_status = order.status
-        new_status = serializer.validated_data.get("status", old_status)
-        if old_status != new_status and new_status in (
-            Order.Status.CANCELLED, Order.Status.REJECTED
-        ):
-            items = list(OrderItem.objects.filter(order=order))
-            ids = sorted({item.supplier_product_id for item in items})
-            offers = {
-                sp.pk: sp for sp in SupplierProduct.objects.select_for_update()
-                .filter(pk__in=ids).order_by("pk")
-            }
-            for item in items:
-                sp = offers[item.supplier_product_id]
-                sp.quantity += item.quantity
-                sp.is_available = True
-                sp.save(update_fields=["quantity", "is_available"])
+        new_status = serializer.validated_data.get(
+            "status",
+            order.status,
+        )
 
-        order = serializer.save()
-        if order.status != old_status:
-            transaction.on_commit(lambda order_id=order.pk: send_order_status_email(order_id))
-            
-        return Response(self.get_serializer(order).data)
+        try:
+            # Общий сервис выполняет изменение статуса,
+            # возврат остатков и отправку уведомления.
+            order = change_order_status(
+                order.id,
+                new_status,
+            )
+
+        except DjangoValidationError as exc:
+            # Преобразуем ошибку Django в HTTP 400.
+            raise ValidationError(
+                exc.messages
+            ) from exc
+
+        return Response(
+            self.get_serializer(order).data
+        )
