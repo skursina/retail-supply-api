@@ -1,8 +1,11 @@
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import override_settings
+from django.db import IntegrityError
 from rest_framework import status
 from rest_framework.test import APITestCase
+
+from unittest.mock import patch
 
 
 @override_settings(
@@ -29,6 +32,12 @@ class UserRegistrationTests(APITestCase):
 
         user = get_user_model().objects.get(username="test_buyer")
 
+        from products.models import SupplierProfile
+
+        self.assertFalse(
+            SupplierProfile.objects.filter(user=user).exists()
+        )
+
         self.assertEqual(user.role, "buyer")
         self.assertFalse(user.is_active)
         self.assertTrue(user.check_password("StrongPassword2026!"))
@@ -44,6 +53,7 @@ class UserRegistrationTests(APITestCase):
                     "email": "supplier@example.com",
                     "password": "StrongPassword2026!",
                     "role": "supplier",
+                    "company_name": "Тестовая компания",
                 },
                 format="json",
             )
@@ -55,6 +65,60 @@ class UserRegistrationTests(APITestCase):
         self.assertEqual(user.role, "supplier")
         self.assertFalse(user.is_active)
         self.assertEqual(len(mail.outbox), 1)
+
+        from products.models import SupplierProfile
+
+        profile = SupplierProfile.objects.get(user=user)
+
+        self.assertEqual(
+            profile.company_name,
+            "Тестовая компания",
+        )
+        self.assertTrue(profile.is_accepting_orders)
+
+    def test_supplier_registration_requires_company_name(self):
+        response = self.client.post(
+            "/api/users/register/",
+            {
+                "username": "supplier_without_company",
+                "email": "no_company@example.com",
+                "password": "StrongPassword2026!",
+                "role": "supplier",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("company_name", response.data)
+        self.assertFalse(
+            get_user_model().objects.filter(
+                username="supplier_without_company"
+            ).exists()
+        )
+
+    def test_supplier_registration_rolls_back_on_profile_error(self):
+        with patch(
+            "users.serializers.SupplierProfile.objects.create",
+            side_effect=IntegrityError("Profile creation failed"),
+        ):
+            with self.assertRaises(IntegrityError):
+                self.client.post(
+                    "/api/users/register/",
+                    {
+                        "username": "rollback_supplier",
+                        "email": "rollback@example.com",
+                        "password": "StrongPassword2026!",
+                        "role": "supplier",
+                        "company_name": "Rollback Company",
+                    },
+                    format="json",
+                )
+
+        self.assertFalse(
+            get_user_model().objects.filter(
+                username="rollback_supplier"
+            ).exists()
+        )
 
     def test_inactive_user_cannot_login(self):
         """До подтверждения email авторизация запрещена."""
