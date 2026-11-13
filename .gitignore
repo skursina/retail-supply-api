@@ -1,16 +1,21 @@
 .venv/
-
+venv/
 __pycache__/
 *.py[cod]
-*.pyc
-*$py.class
+*.sqlite3
 
-staticfiles/
+.git/
+.gitignore
 
 .env
-!.env.example
+.env.*
 
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-
+.idea/
 .vscode/
+
+staticfiles/
+media/
