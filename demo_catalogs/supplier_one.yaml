@@ -1,0 +1,40 @@
+
+shop: "SMTP Test Company"
+
+categories:
+  - id: 1
+    name: "Компьютерная техника"
+  - id: 2
+    name: "Периферия"
+
+goods:
+  - id: "A001"
+    category: 1
+    name: "Ноутбук Lenovo"
+    price: 65000
+    quantity: 10
+    description: "Ноутбук для работы и учёбы"
+    unit: "шт."
+    parameters:
+      Бренд: "Lenovo"
+      Тип: "Ноутбук"
+
+  - id: "A002"
+    category: 2
+    name: "Мышь Logitech"
+    price: 2500
+    quantity: 30
+    description: "Беспроводная компьютерная мышь"
+    unit: "шт."
+    parameters:
+      Бренд: "Logitech"
+
+  - id: "A003"
+    category: 2
+    name: "Клавиатура механическая"
+    price: 5500
+    quantity: 15
+    description: "Механическая клавиатура"
+    unit: "шт."
+    parameters:
+      Тип: "Механическая"

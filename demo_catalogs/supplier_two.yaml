@@ -1,0 +1,39 @@
+
+shop: "Demo Supplier Two"
+
+categories:
+  - id: 1
+    name: "Компьютерная техника"
+  - id: 2
+    name: "Периферия"
+
+goods:
+  - id: "B001"
+    category: 1
+    name: "Монитор Samsung"
+    price: 18000
+    quantity: 12
+    description: "Монитор для компьютера"
+    unit: "шт."
+    parameters:
+      Бренд: "Samsung"
+
+  - id: "B002"
+    category: 2
+    name: "Наушники JBL"
+    price: 7000
+    quantity: 20
+    description: "Наушники для компьютера"
+    unit: "шт."
+    parameters:
+      Бренд: "JBL"
+
+  - id: "B003"
+    category: 2
+    name: "Веб-камера Logitech"
+    price: 4500
+    quantity: 18
+    description: "Веб-камера для видеосвязи"
+    unit: "шт."
+    parameters:
+      Бренд: "Logitech"
