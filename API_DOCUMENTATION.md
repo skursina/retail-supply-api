@@ -1,4 +1,4 @@
-# API Documentation --- Retail Supply API
+# API-документация — Retail Supply API
 
 Документ основан на предоставленных `config/urls.py`, URL-файлах
 приложений, сериализаторах, моделях и фрагментах представлений.
@@ -16,18 +16,18 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 Регистрация. Поля сериализатора:
 
-  Поле           Тип      Примечание
-  -------------- -------- ---------------------------------
-  `username`     string   Имя пользователя
-  `email`        string   Email
-  `password`     string   Проверяется валидаторами Django
-  `first_name`   string   Необязательно
-  `last_name`    string   Необязательно
-  `role`         string   `buyer` или `supplier`
+| Поле | Тип | Примечание |
+|---|---|---|
+| `username` | string | Имя пользователя |
+| `email` | string | Email |
+| `password` | string | Проверяется валидаторами Django |
+| `first_name` | string | Необязательно |
+| `last_name` | string | Необязательно |
+| `role` | string | `buyer` или `supplier` |
 
 Пример:
 
-``` json
+```json
 {
   "username": "buyer_demo",
   "email": "buyer@example.com",
@@ -44,7 +44,7 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 Тело:
 
-``` json
+```json
 {
   "username": "buyer_demo",
   "password": "StrongPassword2026!"
@@ -94,10 +94,10 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 ### `PATCH /api/catalog/supplier/settings/`
 
-Изменение настроек. Подтверждённое поле для изменения ---
+Изменение настроек. Подтверждённое поле для изменения —
 `is_accepting_orders`; `id` и `company_name` только для чтения.
 
-``` json
+```json
 {
   "is_accepting_orders": false
 }
@@ -108,14 +108,14 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 ### `POST /api/catalog/import/`
 
 Загрузка YAML поставщиком. Требуется авторизация и роль `supplier`.
-Формат --- `multipart/form-data`, поле `file`.
+Формат — `multipart/form-data`, поле `file`.
 
 Проверки файла: непустой; размер не более 2 МБ; расширение `.yaml` или
 `.yml`; кодировка UTF-8.
 
 Успешная постановка задачи возвращает HTTP 202:
 
-``` json
+```json
 {
   "task_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
   "status": "queued",
@@ -136,7 +136,7 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 Экспорт YAML. В предоставленном коде `ExportProductsView` использует
 `IsAdminUser`, поэтому маршрут доступен администратору. `supplier_id`
 обязателен, должен быть положительным целым числом и соответствовать
-существующему профилю поставщика. Успешный ответ --- YAML-файл.
+существующему профилю поставщика. Успешный ответ — YAML-файл.
 
 ## 4. Корзина
 
@@ -151,7 +151,7 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 Добавление предложения поставщика или увеличение его количества:
 
-``` json
+```json
 {
   "supplier_product": 12,
   "quantity": 2
@@ -203,7 +203,7 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 Оформление заказа. Требуется авторизация и роль `buyer`.
 
-``` json
+```json
 {
   "address_id": 3
 }
@@ -215,14 +215,27 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 оформлении фиксируются данные позиции и цена на момент заказа,
 уменьшаются остатки, позиции корзины удаляются, корзина закрывается.
 
-### `GET /api/orders/`
+### GET `/api/orders/`
 
-Список заказов. Точные ограничения по ролям определяются
-`OrderListView`.
+Получение списка заказов текущего пользователя.
 
-### `GET /api/orders/{id}/`
+Требуется авторизация.
 
-Детали заказа. Проверка доступа определяется `OrderDetailView`.
+- Покупатель видит только собственные заказы.
+- Поставщик видит только заказы своего магазина.
+- Администратор видит все заказы.
+
+### GET `/api/orders/{id}/`
+
+Получение подробной информации о заказе.
+
+Пользователь может получить только заказ, доступный ему согласно его роли:
+
+- Покупатель — собственный заказ.
+- Поставщик — заказ своего магазина.
+- Администратор — любой заказ.
+
+При попытке доступа к чужому заказу возвращается HTTP 404.
 
 Поля заказа: `id`, `number`, `status`, `supplier`, `supplier_name`,
 `total_amount`, `delivery_address`, `delivery_address_text`,
@@ -235,19 +248,19 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 Изменение статуса. Сериализатор разрешает переходы:
 
-  Текущий статус   Допустимые следующие статусы
-  ---------------- --------------------------------------
-  `new`            `confirmed`, `rejected`, `cancelled`
-  `confirmed`      `processing`, `cancelled`
-  `processing`     `shipped`, `cancelled`
-  `shipped`        `completed`
-  `completed`      Нет
-  `rejected`       Нет
-  `cancelled`      Нет
+| Текущий статус | Допустимые следующие статусы |
+|---|---|
+| `new` | `confirmed`, `rejected`, `cancelled` |
+| `confirmed` | `processing`, `cancelled` |
+| `processing` | `shipped`, `cancelled` |
+| `shipped` | `completed` |
+| `completed` | Нет |
+| `rejected` | Нет |
+| `cancelled` | Нет |
 
 Пример:
 
-``` json
+```json
 {
   "status": "confirmed"
 }
@@ -260,13 +273,13 @@ Base URL локального Docker-запуска: `http://localhost:8000`.
 
 Защищённый запрос:
 
-``` http
+```http
 Authorization: Token <token>
 ```
 
 JSON-запрос:
 
-``` http
+```http
 Content-Type: application/json
 ```
 
@@ -275,19 +288,19 @@ Content-Type: application/json
 
 ## 8. HTTP-статусы
 
-В зависимости от endpoint и результата могут использоваться: - `200 OK`
---- успешное чтение/обновление; - `201 Created` --- создание; -
-`202 Accepted` --- задача импорта поставлена в очередь; -
-`400 Bad Request` --- ошибка данных или неверные учётные данные; -
-`403 Forbidden` --- недостаточно прав или неподходящая роль; -
-`404 Not Found` --- ресурс отсутствует или недоступен; -
-`503 Service Unavailable` --- брокер задач недоступен при постановке
-импорта.
+В зависимости от endpoint и результата могут использоваться:
+
+- `200 OK` — успешное чтение или обновление.
+- `201 Created` — ресурс создан.
+- `202 Accepted` — задача импорта поставлена в очередь.
+- `400 Bad Request` — ошибка входных данных или неверные учётные данные.
+- `403 Forbidden` — недостаточно прав или неподходящая роль.
+- `404 Not Found` — ресурс отсутствует или недоступен текущему пользователю.
+- `503 Service Unavailable` — брокер задач недоступен при постановке импорта.
 
 ## 9. Что проверить перед публикацией
 
-В предоставленных материалах не было полного актуального кода
-`ProductImportStatusView`, `OrderListView`, `OrderDetailView` и
-`OrderStatusUpdateView`. Поэтому точные схемы их ответов и все
-ограничения доступа здесь намеренно не выдуманы. Перед публикацией
-проверьте эти представления в рабочей копии.
+Перед публикацией отдельно сверьте точный формат ответа
+`ProductImportStatusView` и встроенные маршруты Djoser с текущей рабочей
+копией проекта. Эти детали зависят от реализации и установленной версии
+зависимостей.
