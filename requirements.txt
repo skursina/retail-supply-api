@@ -40,3 +40,4 @@ tzlocal==5.4.5
 urllib3==2.8.0
 vine==5.1.0
 wcwidth==0.9.4
+gunicorn==27.0.1
