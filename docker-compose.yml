@@ -36,7 +36,6 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       DJANGO_DEBUG: "False"
-      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,web
     command: python manage.py migrate --noinput
     depends_on:
       db:
@@ -55,9 +54,6 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       DJANGO_DEBUG: "False"
-      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,web
-    ports:
-      - "8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -86,5 +82,21 @@ services:
       redis:
         condition: service_healthy
 
+  caddy:
+    image: caddy:2.11.9
+    container_name: retail_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_started
 volumes:
   postgres_data:
+  caddy_data:
+  caddy_config:

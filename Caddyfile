@@ -1,0 +1,10 @@
+193.227.241.71 {
+    tls {
+        issuer acme {
+            profile shortlived
+        }
+    }
+
+    encode zstd gzip
+    reverse_proxy web:8000
+}
