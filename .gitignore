@@ -7,8 +7,6 @@ __pycache__/
 .git/
 .gitignore
 
-.env
-
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -18,3 +16,17 @@ __pycache__/
 
 staticfiles/
 media/
+
+# Environment and secrets
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local test data
+demo_catalogs/
+shop1.yaml
+
+# Logs and temporary files
+*.log
+*.tmp
