@@ -26,7 +26,6 @@ media/
 
 # Local test data
 demo_catalogs/
-shop1.yaml
 
 # Logs and temporary files
 *.log
