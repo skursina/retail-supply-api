@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: retail_ci
+      POSTGRES_USER: retail_ci
+      POSTGRES_PASSWORD: retail_ci_test_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retail_ci -d retail_ci"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DJANGO_SECRET_KEY: ci-only-test-secret-key
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,test
+      DB_NAME: retail_ci
+      DB_USER: retail_ci
+      DB_PASSWORD: retail_ci_test_password
+      DB_HOST: db
+      DB_PORT: "5432"
+      EMAIL_BACKEND: django.core.mail.backends.console.EmailBackend
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    command: python manage.py test
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
