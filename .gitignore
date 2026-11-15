@@ -26,6 +26,9 @@ media/
 
 # Local test data
 demo_catalogs/
+Dockerfile.backup
+VM.txt
+docker-compose.yml.backup
 
 # Logs and temporary files
 *.log
